@@ -607,6 +607,7 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                         self._restore_insert_mode()
                     return
 
+            result_data = None
             if is_multi_statement:
                 # Multi-statement execution with stacked results
                 multi_executor = MultiStatementExecutor(executor)
@@ -621,6 +622,12 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                     await asyncio.to_thread(self._save_query_history, config, query)
                 except Exception:
                     pass
+                
+                # Check for errors in multi-statement results if in watch mode
+                if is_watch_tick and self._watch_query_stop_on_error and hasattr(multi_result, "has_error") and multi_result.has_error:
+                    self._disable_query_watch(notify=False)
+                    self.notify(f"Watch stopped due to error in multi-statement query", severity="error")
+                
                 self._display_multi_statement_results(multi_result, elapsed_ms)
                 self._maybe_refresh_explorer_after_query(query)
             else:
