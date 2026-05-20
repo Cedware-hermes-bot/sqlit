@@ -231,6 +231,16 @@ Use with operators like `y`, `d`, `c` (e.g. `dw`, `y$`).
 | `<space>h` | Help |
 | `<space>q` | Quit |
 
+### Command Mode (`:`)
+
+| Command | Action |
+|---------|--------|
+| `:run` / `:r` | Execute the current query |
+| `:run!` / `:r!` | Execute the current query and stay in INSERT mode |
+| `:watch 2s` | Re-run the current query every 2 seconds |
+| `:watch 500ms` | Re-run the current query every 500 milliseconds |
+| `:watch off` | Stop recurring query execution |
+
 Autocomplete triggers automatically in INSERT mode. Use `Tab` to accept.
 
 ---

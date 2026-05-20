@@ -16,6 +16,7 @@ from sqlit.shared.ui.spinner import Spinner
 from .query_constants import MAX_FETCH_ROWS
 
 if TYPE_CHECKING:
+    from textual.timer import Timer
     from textual.worker import Worker
 
     from sqlit.domains.query.app.cancellable import CancellableQuery
@@ -52,6 +53,11 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
     _schema_indexing: bool = False
     _pending_telescope_query: tuple[str, str] | None = None
     _telescope_auto_filter: bool = False
+    _watch_query_timer: Timer | None = None
+    _watch_query_interval_s: float = 0.0
+    _watch_query_running: bool = False
+    _watch_query_last_sql: str | None = None
+    _watch_query_execution_count: int = 0
 
     def action_execute_query(self: QueryMixinHost) -> None:
         """Execute the current query."""
@@ -261,6 +267,7 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
     def _stop_query_spinner(self: QueryMixinHost) -> None:
         """Stop the query execution spinner animation."""
         self.query_executing = False
+        self._watch_query_running = False
         if self._query_spinner is not None:
             self._query_spinner.stop()
             self._query_spinner = None
@@ -346,7 +353,77 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
         parent_disconnect = getattr(super(), "_on_disconnect", None)
         if callable(parent_disconnect):
             parent_disconnect()
+        self._disable_query_watch(notify=False)
         self._reset_transaction_executor()
+
+    def _set_query_watch(self: QueryMixinHost, interval_s: float) -> None:
+        """Enable recurring execution of the current query."""
+        if self.current_connection is None or self.current_provider is None:
+            self.notify("Connect to a server to watch queries", severity="warning")
+            return
+
+        query = self._get_query_to_execute()
+        if not query:
+            self.notify("No query to watch", severity="warning")
+            return
+
+        self._disable_query_watch(notify=False)
+        self._watch_query_interval_s = float(interval_s)
+        self._watch_query_last_sql = query
+        self._watch_query_execution_count = 0
+        self._watch_query_running = False
+        self._watch_query_timer = self.set_interval(self._watch_query_interval_s, self._watch_query_tick)
+        self._update_status_bar()
+        self.notify(f"Query watch enabled ({self._format_watch_interval()})")
+
+    def _disable_query_watch(self: QueryMixinHost, *, notify: bool = True) -> None:
+        """Disable recurring execution of the current query."""
+        timer = getattr(self, "_watch_query_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._watch_query_timer = None
+        self._watch_query_interval_s = 0.0
+        self._watch_query_running = False
+        self._watch_query_last_sql = None
+        self._watch_query_execution_count = 0
+        self._update_status_bar()
+        if notify:
+            self.notify("Query watch disabled")
+
+    def _watch_query_tick(self: QueryMixinHost) -> None:
+        """Execute the watched query if the app is ready for another run."""
+        if self.query_executing or self._watch_query_running:
+            self.notify("Watch skipped: query already running")
+            return
+        if self.current_connection is None or self.current_provider is None:
+            self._disable_query_watch(notify=False)
+            self.notify("Query watch stopped: connection lost", severity="warning")
+            return
+
+        query = self._get_query_to_execute()
+        if not query:
+            self.notify("Watch skipped: no query to execute", severity="warning")
+            return
+
+        self._watch_query_last_sql = query
+        self._watch_query_running = True
+        self._watch_query_execution_count += 1
+        self._execute_query_common(keep_insert_mode=False)
+        if not self.query_executing:
+            self._watch_query_running = False
+        self._update_status_bar()
+
+    def _format_watch_interval(self: QueryMixinHost) -> str:
+        """Return a compact human-readable interval label for watch mode."""
+        interval = float(getattr(self, "_watch_query_interval_s", 0.0) or 0.0)
+        if interval <= 0:
+            return "off"
+        if interval.is_integer():
+            return f"{int(interval)}s"
+        return f"{interval:g}s"
 
     def _on_connect(self: QueryMixinHost) -> None:
         """Handle connect lifecycle event."""

@@ -208,6 +208,13 @@ class UIStatusMixin:
         if getattr(self, "in_transaction", False):
             status_parts.append("[bold magenta]⚡ TRANSACTION[/]")
 
+        watch_interval = float(getattr(self, "_watch_query_interval_s", 0.0) or 0.0)
+        if watch_interval > 0:
+            formatter = getattr(self, "_format_watch_interval", None)
+            label = formatter() if callable(formatter) else f"{watch_interval:g}s"
+            watch_count = int(getattr(self, "_watch_query_execution_count", 0) or 0)
+            status_parts.append(f"[bold cyan]WATCH {label} #{watch_count}[/]")
+
         status_str = "  ".join(status_parts)
         if status_str:
             status_str += "  "

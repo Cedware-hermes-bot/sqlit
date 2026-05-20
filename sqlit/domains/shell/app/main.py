@@ -161,6 +161,11 @@ class SSMSTUI(
         self._last_active_pane: str | None = None
         self._query_worker: Worker[Any] | None = None
         self._query_handle: Any | None = None
+        self._watch_query_timer: Timer | None = None
+        self._watch_query_interval_s: float = 0.0
+        self._watch_query_running: bool = False
+        self._watch_query_last_sql: str | None = None
+        self._watch_query_execution_count: int = 0
         self._command_mode: bool = False
         self._command_buffer: str = ""
         self._count_buffer: str = ""  # Vim count prefix (e.g., "3" for 3j)
@@ -756,6 +761,7 @@ class SSMSTUI(
             ("Query", ":alert off|delete|write", "Confirm before risky queries", "Modes: off, delete, write"),
             ("Query", ":run, :r", "Execute query", ""),
             ("Query", ":run!, :r!", "Execute query (stay in INSERT)", ""),
+            ("Query", ":watch <interval>|off", "Repeat current query on an interval", "Examples: :watch 2s, :watch 500ms, :watch off"),
             (
                 "Navigation",
                 ":<number>",
