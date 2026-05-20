@@ -16,6 +16,7 @@ from sqlit.shared.ui.spinner import Spinner
 from .query_constants import MAX_FETCH_ROWS
 
 if TYPE_CHECKING:
+    from textual.timer import Timer
     from textual.worker import Worker
 
     from sqlit.domains.query.app.cancellable import CancellableQuery
@@ -52,14 +53,25 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
     _schema_indexing: bool = False
     _pending_telescope_query: tuple[str, str] | None = None
     _telescope_auto_filter: bool = False
+    _watch_query_timer: Timer | None = None
+    _watch_query_interval_s: float = 0.0
+    _watch_query_running: bool = False
+    _watch_query_last_sql: str | None = None
+    _watch_query_execution_count: int = 0
+    _watch_query_stop_on_error: bool = True
+
+    def _on_query_text_changed(self: QueryMixinHost) -> None:
+        """Stop watch mode if query text changes. Called manually by TextArea watchers."""
+        if self._watch_query_timer is not None:
+            self._disable_query_watch(notify=True)
 
     def action_execute_query(self: QueryMixinHost) -> None:
         """Execute the current query."""
-        self._execute_query_common(keep_insert_mode=False)
+        self._execute_query_common(keep_insert_mode=False, is_watch_tick=False)
 
     def action_execute_query_insert(self: QueryMixinHost) -> None:
         """Execute query in INSERT mode without leaving it."""
-        self._execute_query_common(keep_insert_mode=True)
+        self._execute_query_common(keep_insert_mode=True, is_watch_tick=False)
 
     def action_execute_query_atomic(self: QueryMixinHost) -> None:
         """Execute query atomically (wrapped in BEGIN/COMMIT with rollback on error)."""
@@ -151,7 +163,7 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
 
         return self.query_input.text.strip()
 
-    def _execute_query_common(self: QueryMixinHost, keep_insert_mode: bool) -> None:
+    def _execute_query_common(self: QueryMixinHost, keep_insert_mode: bool, is_watch_tick: bool = False) -> None:
         """Common query execution logic."""
         if self.current_connection is None or self.current_provider is None:
             self.notify("Connect to a server to execute queries", severity="warning")
@@ -170,7 +182,7 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
             self._start_query_spinner()
 
             self._query_worker = self.run_worker(
-                self._run_query_async(query, keep_insert_mode),
+                self._run_query_async(query, keep_insert_mode, is_watch_tick=is_watch_tick),
                 name="query_execution",
                 exclusive=True,
             )
@@ -261,6 +273,7 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
     def _stop_query_spinner(self: QueryMixinHost) -> None:
         """Stop the query execution spinner animation."""
         self.query_executing = False
+        self._watch_query_running = False
         if self._query_spinner is not None:
             self._query_spinner.stop()
             self._query_spinner = None
@@ -346,7 +359,78 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
         parent_disconnect = getattr(super(), "_on_disconnect", None)
         if callable(parent_disconnect):
             parent_disconnect()
+        self._disable_query_watch(notify=False)
         self._reset_transaction_executor()
+
+    def _set_query_watch(self: QueryMixinHost, interval_s: float, stop_on_error: bool = True) -> None:
+        """Enable recurring execution of the current query."""
+        if self.current_connection is None or self.current_provider is None:
+            self.notify("Connect to a server to watch queries", severity="warning")
+            return
+
+        query = self._get_query_to_execute()
+        if not query:
+            self.notify("No query to watch", severity="warning")
+            return
+
+        self._disable_query_watch(notify=False)
+        self._watch_query_interval_s = float(interval_s)
+        self._watch_query_last_sql = query
+        self._watch_query_execution_count = 0
+        self._watch_query_running = False
+        self._watch_query_stop_on_error = stop_on_error
+        self._watch_query_timer = self.set_interval(self._watch_query_interval_s, self._watch_query_tick)
+        self._update_status_bar()
+        self.notify(f"Query watch enabled ({self._format_watch_interval()})")
+
+    def _disable_query_watch(self: QueryMixinHost, *, notify: bool = True) -> None:
+        """Disable recurring execution of the current query."""
+        timer = getattr(self, "_watch_query_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._watch_query_timer = None
+        self._watch_query_interval_s = 0.0
+        self._watch_query_running = False
+        self._watch_query_last_sql = None
+        self._watch_query_execution_count = 0
+        self._update_status_bar()
+        if notify:
+            self.notify("Query watch disabled")
+
+    def _watch_query_tick(self: QueryMixinHost) -> None:
+        """Execute the watched query if the app is ready for another run."""
+        if self.query_executing or self._watch_query_running:
+            self.notify("Watch skipped: query already running")
+            return
+        if self.current_connection is None or self.current_provider is None:
+            self._disable_query_watch(notify=False)
+            self.notify("Query watch stopped: connection lost", severity="warning")
+            return
+
+        query = self._get_query_to_execute()
+        if not query:
+            self.notify("Watch skipped: no query to execute", severity="warning")
+            return
+
+        self._watch_query_last_sql = query
+        self._watch_query_running = True
+        self._watch_query_execution_count += 1
+        self._execute_query_common(keep_insert_mode=False, is_watch_tick=True)
+        if not self.query_executing:
+            self._watch_query_running = False
+        self._update_status_bar()
+
+    def _format_watch_interval(self: QueryMixinHost) -> str:
+        """Return a compact human-readable interval label for watch mode."""
+        interval = float(getattr(self, "_watch_query_interval_s", 0.0) or 0.0)
+        if interval <= 0:
+            return "off"
+        if interval.is_integer():
+            return f"{int(interval)}s"
+        return f"{interval:g}s"
 
     def _on_connect(self: QueryMixinHost) -> None:
         """Handle connect lifecycle event."""
@@ -398,7 +482,7 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
             return bool(self._transaction_executor.in_transaction)
         return False
 
-    async def _run_query_async(self: QueryMixinHost, query: str, keep_insert_mode: bool) -> None:
+    async def _run_query_async(self: QueryMixinHost, query: str, keep_insert_mode: bool, is_watch_tick: bool = False) -> None:
         """Run query asynchronously using TransactionExecutor for transaction support."""
         import asyncio
         import time
@@ -500,6 +584,8 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                     if outcome.cancelled:
                         return
                     if outcome.error:
+                        if is_watch_tick and self._watch_query_stop_on_error:
+                            self._disable_query_watch(notify=False)
                         self._display_query_error(outcome.error)
                         return
 
@@ -525,6 +611,7 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                         self._restore_insert_mode()
                     return
 
+            result_data = None
             if is_multi_statement:
                 # Multi-statement execution with stacked results
                 multi_executor = MultiStatementExecutor(executor)
@@ -539,6 +626,10 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                     await asyncio.to_thread(self._save_query_history, config, query)
                 except Exception:
                     pass
+                
+                # Check for errors in multi-statement results if in watch mode
+                if is_watch_tick and self._watch_query_stop_on_error and hasattr(multi_result, "has_error") and multi_result.has_error:
+                    self._disable_query_watch(notify=False)
                 self._display_multi_statement_results(multi_result, elapsed_ms)
                 self._maybe_refresh_explorer_after_query(query)
             else:
@@ -561,6 +652,9 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                     )
                 else:
                     self._display_non_query_result(result.rows_affected, elapsed_ms)
+
+                if is_watch_tick:
+                    self.notify(f"Watch tick #{self._watch_query_execution_count} successful")
                 self._maybe_refresh_explorer_after_query(query)
 
             if keep_insert_mode:
@@ -570,8 +664,12 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
             if "cancelled" in str(e).lower():
                 pass  # Already handled by action_cancel_query
             else:
+                if is_watch_tick and self._watch_query_stop_on_error:
+                    self._disable_query_watch(notify=False)
                 self._display_query_error(str(e))
         except Exception as e:
+            if is_watch_tick and self._watch_query_stop_on_error:
+                self._disable_query_watch(notify=False)
             self._display_query_error(str(e))
         finally:
             self._stop_query_spinner()

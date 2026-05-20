@@ -35,6 +35,11 @@ class QueryStateProtocol(Protocol):
     _transaction_executor_config: Any | None
     _results_render_worker: Worker[Any] | None
     _results_render_token: int
+    _watch_query_timer: Timer | None
+    _watch_query_interval_s: float
+    _watch_query_running: bool
+    _watch_query_last_sql: str | None
+    _watch_query_execution_count: int
 
 
 class QueryActionsProtocol(Protocol):
