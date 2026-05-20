@@ -60,6 +60,12 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
     _watch_query_execution_count: int = 0
     _watch_query_stop_on_error: bool = True
 
+    def on_input_changed(self: QueryMixinHost, event: Any) -> None:
+        """Stop watch mode if query text changes."""
+        if event.sender == self.query_input:
+            if self._watch_query_timer is not None:
+                self._disable_query_watch(notify=True)
+
     def action_execute_query(self: QueryMixinHost) -> None:
         """Execute the current query."""
         self._execute_query_common(keep_insert_mode=False, is_watch_tick=False)
@@ -581,8 +587,9 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                     if outcome.error:
                         if is_watch_tick and self._watch_query_stop_on_error:
                             self._disable_query_watch(notify=False)
-                            self.notify(f"Watch stopped due to error: {outcome.error}", severity="error")
-                        self._display_query_error(outcome.error)
+                            self.notify(f"Watch stopped due to error", severity="error")
+                        else:
+                            self._display_query_error(outcome.error)
                         return
 
                     try:
@@ -626,9 +633,9 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
                 # Check for errors in multi-statement results if in watch mode
                 if is_watch_tick and self._watch_query_stop_on_error and hasattr(multi_result, "has_error") and multi_result.has_error:
                     self._disable_query_watch(notify=False)
-                    self.notify(f"Watch stopped due to error in multi-statement query", severity="error")
-                
-                self._display_multi_statement_results(multi_result, elapsed_ms)
+                    self.notify(f"Watch stopped due to error", severity="error")
+                else:
+                    self._display_multi_statement_results(multi_result, elapsed_ms)
                 self._maybe_refresh_explorer_after_query(query)
             else:
                 # Single statement - existing behavior
@@ -664,13 +671,15 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
             else:
                 if is_watch_tick and self._watch_query_stop_on_error:
                     self._disable_query_watch(notify=False)
-                    self.notify(f"Watch stopped due to error: {e}", severity="error")
-                self._display_query_error(str(e))
+                    self.notify(f"Watch stopped due to error", severity="error")
+                else:
+                    self._display_query_error(str(e))
         except Exception as e:
             if is_watch_tick and self._watch_query_stop_on_error:
                 self._disable_query_watch(notify=False)
-                self.notify(f"Watch stopped due to error: {e}", severity="error")
-            self._display_query_error(str(e))
+                self.notify(f"Watch stopped due to error", severity="error")
+            else:
+                self._display_query_error(str(e))
         finally:
             self._stop_query_spinner()
 
