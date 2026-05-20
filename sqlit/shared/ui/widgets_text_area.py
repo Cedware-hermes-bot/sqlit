@@ -267,6 +267,8 @@ class QueryTextArea(TextArea):
         """Push current state to undo history if text has changed."""
         current_text = self.text
         if current_text != self._last_text:
+            if hasattr(self.app, "_on_query_text_changed"):
+                self.app._on_query_text_changed()
             if hasattr(self.app, "_push_undo_state"):
                 self.app._push_undo_state()
             self._last_text = current_text

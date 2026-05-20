@@ -60,11 +60,10 @@ class QueryExecutionMixin(ProcessWorkerLifecycleMixin):
     _watch_query_execution_count: int = 0
     _watch_query_stop_on_error: bool = True
 
-    def on_input_changed(self: QueryMixinHost, event: Any) -> None:
-        """Stop watch mode if query text changes."""
-        if event.sender == self.query_input:
-            if self._watch_query_timer is not None:
-                self._disable_query_watch(notify=True)
+    def _on_query_text_changed(self: QueryMixinHost) -> None:
+        """Stop watch mode if query text changes. Called manually by TextArea watchers."""
+        if self._watch_query_timer is not None:
+            self._disable_query_watch(notify=True)
 
     def action_execute_query(self: QueryMixinHost) -> None:
         """Execute the current query."""
